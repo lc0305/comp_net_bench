@@ -1,5 +1,6 @@
-CFLAGS_OPT = -Ofast
-CFLAGS += -Wall -Wextra $(CFLAGS_OPT) -march=native -fdata-sections -ffunction-sections
+CFLAGS_DEBUG += -Og -g -fsanitize=address -fno-omit-frame-pointer -D BENCH_DEBUG_PRINT
+CFLAGS_RELEASE += -Ofast -march=native
+CFLAGS += -Wall -Wextra -std=c++17 -fdata-sections -ffunction-sections
 LFLAGS += -luring -llz4 -lz
 
 BIN = comp_net_bench
@@ -13,9 +14,12 @@ LFLAGS += -Wl,-dead_strip
 endif
 
 main: buf_pool.hpp common.hpp compress.hpp file_cache.hpp http_request_parser.hpp http_response.hpp http_status.hpp main.cpp networking.hpp
-	clang++ $(CFLAGS) -std=c++17 $(LFLAGS) main.cpp -o $(BIN)
+	clang++ $(CFLAGS) $(CFLAGS_RELEASE) $(LFLAGS) main.cpp -o $(BIN)
+
+debug: buf_pool.hpp common.hpp compress.hpp file_cache.hpp http_request_parser.hpp http_response.hpp http_status.hpp main.cpp networking.hpp
+	clang++ $(CFLAGS) $(CFLAGS_DEBUG) $(LFLAGS) main.cpp -o $(BIN)
 
 clean:
 	rm *.o *.so $(BIN)
 
-.PHONY: clean
+.PHONY: debug clean

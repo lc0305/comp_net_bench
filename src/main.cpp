@@ -248,13 +248,13 @@ static networking::connection *before_connection_accept_cb() noexcept {
   const auto res = connections_for_threads[current_thread].emplace(
       new_connection_id, http_connection({
                              .conn_fd = -1,
-                             .user_data = new_connection_id,
+                             .read_buf.nbytes_read = 0,
+                             .write_buf.nbytes_written = 0,
                              .on_accepted_cb = on_connection_accepted_cb,
                              .on_recvd_cb = on_connection_recvd_cb,
                              .on_sent_cb = on_connection_sent_cb,
                              .on_closed_cb = on_connection_closed_cb,
-                             .read_buf.nbytes_read = 0,
-                             .write_buf.nbytes_written = 0,
+                             .user_data = new_connection_id,
                          }));
   if (likely(res.second)) {
     // required because request starts uninitialized in broken state

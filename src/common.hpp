@@ -5,8 +5,6 @@
 #include <climits>
 #include <string_view>
 
-#define BENCH_DEBUG_PRINT
-
 #define expect(expr, value) (__builtin_expect((expr), (value)))
 #define likely(expr) expect((expr) != 0, 1)
 #define unlikely(expr) expect((expr) != 0, 0)

@@ -277,8 +277,7 @@ inline int server_loop(const uint32_t addr, const uint16_t port) {
       case ACCEPTING: {
         connection->conn_state = likely(res > 0) ? ACCEPTED : REFUSED;
         connection->conn_fd = res;
-        const auto on_accepted_ret =
-            connection->on_accepted_cb(connection, res);
+        connection->on_accepted_cb(connection, res);
         {
           connection_t *const connection = before_connection_accept();
           if (unlikely(connection == NULL))
