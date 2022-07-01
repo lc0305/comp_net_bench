@@ -61,7 +61,14 @@ typedef struct write_buf {
   size_t nbytes_written;
 } write_buf_t;
 
+typedef enum loop_mode {
+  SERVER,
+  CLIENT,
+} loop_mode_t;
+
 typedef enum connection_state {
+  CONNECT_PENDING,
+  CONNECTED,
   ACCEPT_PENDING,
   ACCEPTED,
   REFUSED,
@@ -71,21 +78,22 @@ typedef enum connection_state {
 
 typedef enum event_interest {
   NONE,
-  READ,
-  WRITE,
+  RECEIVE,
+  SEND,
   CLOSE,
 } event_interest_t;
 
 typedef enum event_state {
   NOP,
+  CONNECTING,
   ACCEPTING,
-  READING,
-  WRITING,
+  RECEIVING,
+  SENDING,
   CLOSING,
 } event_state_t;
 
 typedef struct connection {
-  struct sockaddr_in client_addr;
+  struct sockaddr_in sock_addr;
   socklen_t addr_len;
   int conn_fd;
   connection_state_t conn_state;
@@ -93,7 +101,10 @@ typedef struct connection {
   event_state_t event_state;
   read_buf_t read_buf;
   write_buf_t write_buf;
-  int (*on_accepted_cb)(struct connection *connection, int res);
+  union {
+    int (*on_accepted_cb)(struct connection *connection, int res);
+    int (*on_connected_cb)(struct connection *connection, int res);
+  };
   int (*on_recvd_cb)(struct connection *connection, ssize_t nbytes);
   int (*on_sent_cb)(struct connection *connection, ssize_t nbytes);
   int (*on_closed_cb)(struct connection *connection, int res);
@@ -101,12 +112,7 @@ typedef struct connection {
 } connection_t;
 
 typedef connection_t *(*before_connection_accept_cb_t)();
-typedef int (*on_connection_accepted_cb_t)(connection_t *connection, int res);
-typedef int (*on_connection_recvd_cb_t)(connection_t *connection,
-                                        ssize_t nbytes);
-typedef int (*on_connection_sent_cb_t)(connection_t *connection,
-                                       ssize_t nbytes);
-typedef int (*on_connection_closed_cb_t)(connection_t *connection, int res);
+typedef connection_t *(*before_connection_connect_cb_t)();
 
 static int listening_socket_init(uint32_t addr, uint16_t port) {
   const int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -138,11 +144,11 @@ static int listening_socket_init(uint32_t addr, uint16_t port) {
 
 err_socket:
   close(sock_fd);
-  perror(NULL);
+  perror(nullptr);
   return -1;
 }
 
-static before_connection_accept_cb_t before_connection_accept = NULL;
+static before_connection_accept_cb_t before_connection_accept = nullptr;
 inline int register_before_connection_accept_cb(
     before_connection_accept_cb_t before_connection_accept_cb) {
   before_connection_accept = before_connection_accept_cb;
@@ -157,14 +163,30 @@ inline int add_accept_sqe_for_connection(struct io_uring *const ring,
                                          int listening_sock_fd,
                                          connection_t *const connection) {
   struct io_uring_sqe *const sqe = io_uring_get_sqe(ring);
-  connection->addr_len = sizeof(connection->client_addr);
+  connection->addr_len = sizeof(connection->sock_addr);
   io_uring_prep_accept(
       sqe, listening_sock_fd,
-      reinterpret_cast<struct sockaddr *>(&connection->client_addr),
+      reinterpret_cast<struct sockaddr *>(&connection->sock_addr),
       &connection->addr_len, 0);
   io_uring_sqe_set_data(sqe, connection);
   connection->conn_state = ACCEPT_PENDING;
   connection->event_state = ACCEPTING;
+  return 0;
+}
+
+inline int add_connect_sqe_for_connection(struct io_uring *const ring,
+                                          int connecting_sock_fd,
+                                          connection_t *const connection) {
+  struct io_uring_sqe *const sqe = io_uring_get_sqe(ring);
+  connection->addr_len = sizeof(connection->sock_addr);
+  io_uring_prep_connect(
+      sqe, connecting_sock_fd,
+      reinterpret_cast<struct sockaddr *>(&connection->sock_addr),
+      connection->addr_len);
+  io_uring_sqe_set_data(sqe, connection);
+  connection->conn_fd = connecting_sock_fd;
+  connection->conn_state = CONNECT_PENDING;
+  connection->event_state = CONNECTING;
   return 0;
 }
 
@@ -189,7 +211,7 @@ inline int add_read_sqe_for_connection(struct io_uring *const ring,
     }
   }
   io_uring_sqe_set_data(sqe, connection);
-  connection->event_state = READING;
+  connection->event_state = RECEIVING;
   return 0;
 }
 
@@ -214,7 +236,7 @@ inline int add_write_sqe_for_connection(struct io_uring *const ring,
     }
   }
   io_uring_sqe_set_data(sqe, connection);
-  connection->event_state = WRITING;
+  connection->event_state = SENDING;
   return 0;
 }
 
@@ -228,25 +250,48 @@ inline int add_close_sqe_for_connection(struct io_uring *const ring,
   return 0;
 }
 
-static int listening_sock_fd = -1;
-static struct io_uring ring;
+// inline int establish_connection_to_addr(connection_t *const connection, const
+// char *const addr, const uint16_t port) noexcept {
+//   add_connect_sqe_for_connection(, connection);
 
-inline int server_loop(const uint32_t addr, const uint16_t port) {
-  if (unlikely(before_connection_accept == NULL))
-    return 1;
+//   io_uring_submit(&ring);
+//   return 0;
+// }
 
-  listening_sock_fd = listening_socket_init(addr, port);
-  if (unlikely(listening_sock_fd < 0))
-    return -1;
+typedef struct loop_init {
+  loop_mode_t mode;
+  union {
+    struct {
+      uint32_t addr;
+      uint16_t port;
+    } server;
+    struct {
+    } client;
+  };
+} loop_init_t;
 
-  if (unlikely(io_uring_queue_init(IO_URING_QUEUE_DEPTH, &ring, 0)))
-    goto err_queue_init;
+inline int net_loop(loop_init_t loop_init) noexcept {
+  int listening_sock_fd = -1;
+  struct io_uring ring;
 
-  {
-    connection_t *const connection = before_connection_accept();
-    if (unlikely(connection == NULL))
-      goto err_before_connection_accept;
-    add_accept_sqe_for_connection(&ring, listening_sock_fd, connection);
+  if (loop_init.mode == SERVER) {
+    if (unlikely(before_connection_accept == nullptr))
+      return 1;
+
+    listening_sock_fd =
+        listening_socket_init(loop_init.server.addr, loop_init.server.port);
+    if (unlikely(listening_sock_fd < 0))
+      return -1;
+
+    if (unlikely(io_uring_queue_init(IO_URING_QUEUE_DEPTH, &ring, 0)))
+      goto err_queue_init;
+
+    {
+      connection_t *const connection = before_connection_accept();
+      if (unlikely(connection == nullptr))
+        goto err_before_connection_accept;
+      add_accept_sqe_for_connection(&ring, listening_sock_fd, connection);
+    }
   }
 
   io_uring_submit(&ring);
@@ -266,11 +311,45 @@ inline int server_loop(const uint32_t addr, const uint16_t port) {
     const int res = cqe->res;
 
     switch (connection->conn_state) {
+    case CONNECT_PENDING: {
+      switch (connection->event_state) {
+      case NOP:
+      case ACCEPTING:
+      case RECEIVING:
+      case SENDING:
+      case CLOSING:
+        // should not be in any of these states
+        goto seen;
+      case CONNECTING: {
+        connection->conn_state = likely(!res) ? CONNECTED : REFUSED;
+        connection->on_connected_cb(connection, res);
+        if (unlikely(connection->conn_state != CONNECTED))
+          goto submit_and_seen;
+      }
+      }
+    }
+    // fallthrough
+    case CONNECTED: {
+      switch (connection->event_state) {
+      case NOP:
+      case ACCEPTING:
+      case CLOSING:
+        // should not be in any of these states
+        goto seen;
+      case CONNECTING:
+        goto event_interest;
+      case RECEIVING:
+        goto receiving;
+      case SENDING:
+        goto sending;
+      }
+    }
     case ACCEPT_PENDING: {
       switch (connection->event_state) {
       case NOP:
-      case READING:
-      case WRITING:
+      case CONNECTING:
+      case RECEIVING:
+      case SENDING:
       case CLOSING:
         // should not be in any of these states
         goto seen;
@@ -286,7 +365,6 @@ inline int server_loop(const uint32_t addr, const uint16_t port) {
         }
         if (unlikely(connection->conn_state != ACCEPTED))
           goto submit_and_seen;
-        break;
       }
       }
     }
@@ -294,18 +372,21 @@ inline int server_loop(const uint32_t addr, const uint16_t port) {
     case ACCEPTED: {
       switch (connection->event_state) {
       case NOP:
+      case CONNECTING:
       case CLOSING:
         // should not be in any of these states
         goto seen;
       case ACCEPTING:
         break;
-      case READING: {
+      case RECEIVING: {
+      receiving:
         if (likely(res > 0))
           connection->read_buf.nbytes_read += res;
         connection->on_recvd_cb(connection, res);
         break;
       }
-      case WRITING: {
+      case SENDING: {
+      sending:
         if (likely(res > 0)) {
           connection->write_buf.nbytes_written += res;
           if (unlikely(connection->write_buf.nbytes_written <
@@ -315,18 +396,17 @@ inline int server_loop(const uint32_t addr, const uint16_t port) {
           }
         }
         connection->on_sent_cb(connection, res);
-        // break;
       }
       }
-
+    event_interest:
       switch (connection->event_interest) {
       // should not be in that state
       case NONE:
         goto seen;
-      case READ:
+      case RECEIVE:
         add_read_sqe_for_connection(&ring, connection);
         break;
-      case WRITE:
+      case SEND:
         add_write_sqe_for_connection(&ring, connection);
         break;
       case CLOSE:
@@ -338,9 +418,10 @@ inline int server_loop(const uint32_t addr, const uint16_t port) {
     case CLOSE_PENDING: {
       switch (connection->event_state) {
       case NOP:
+      case CONNECTING:
       case ACCEPTING:
-      case READING:
-      case WRITING:
+      case RECEIVING:
+      case SENDING:
         // should not be in any of these states
         break;
       case CLOSING: {

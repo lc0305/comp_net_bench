@@ -42,7 +42,7 @@ static int on_connection_accepted_cb(networking::connection *const connection,
     return 1;
 
   // lets start reading
-  connection->event_interest = networking::READ;
+  connection->event_interest = networking::RECEIVE;
 
 #ifdef BENCH_DEBUG_PRINT
   std::cout << "accepted connection with fd: " << connection->conn_fd
@@ -175,13 +175,13 @@ static int on_connection_recvd_cb(networking::connection *const connection,
       buf_p.hand_back_buf(connection->read_buf.buf);
       connection->read_buf.nbytes_read = 0;
       // lets start writing the result
-      connection->event_interest = networking::WRITE;
+      connection->event_interest = networking::SEND;
       break;
     }
     case http::PENDING: {
       if (unlikely(buf_p.rent_buf(connection->read_buf.buf, READ_BUF_SIZE)))
         goto err;
-      connection->event_interest = networking::READ;
+      connection->event_interest = networking::RECEIVE;
       break;
     }
     // should not happen
@@ -222,10 +222,10 @@ static int on_connection_sent_cb(networking::connection *const connection,
 
     if (unlikely(buf_p.rent_buf(connection->read_buf.buf, READ_BUF_SIZE)))
       return 1;
-    connection->event_interest = networking::READ;
+    connection->event_interest = networking::RECEIVE;
   } else {
     // write again
-    connection->event_interest = networking::WRITE;
+    connection->event_interest = networking::SEND;
   }
   return 0;
 }
@@ -279,7 +279,8 @@ inline void init() noexcept {
 int main(int argc, const char *const *const argv) noexcept {
   init();
 
-  networking::server_loop(0, 3'000);
+  networking::net_loop(
+      {.mode = networking::SERVER, .server.addr = 0, .server.port = 3'000});
 
   return 0;
 }
