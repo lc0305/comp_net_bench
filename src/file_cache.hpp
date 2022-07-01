@@ -3,11 +3,15 @@
 
 #include "common.hpp"
 #include <cinttypes>
+#include <fcntl.h>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <map>
+#include <numeric>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unistd.h>
 #include <vector>
 
@@ -32,24 +36,6 @@ struct file_data {
       : buf(buf), size(size), type(type) {}
 };
 
-struct internal_file_data {
-  std::vector<char> vec;
-  file_type type;
-
-  inline internal_file_data(const std::size_t file_size,
-                            const file_type type) noexcept
-      : vec(file_size), type(type) {}
-
-  inline internal_file_data(internal_file_data &&other) noexcept
-      : vec(std::move(other.vec)), type(other.type) {}
-
-  inline internal_file_data &operator=(internal_file_data &&other) noexcept {
-    vec = std::move(other.vec);
-    type = other.type;
-    return *this;
-  }
-};
-
 constexpr file_type
 get_file_type_for_path(const std::string_view file_path) noexcept {
   // this isnt particulary efficient, but is only called at startup anyway
@@ -70,13 +56,18 @@ get_file_type_for_path(const std::string_view file_path) noexcept {
 
 class file_cache {
 private:
-  std::vector<std::string> file_paths;
-  std::map<std::string_view, internal_file_data> files;
+  std::vector<char> file_path_vec;
+  std::map<const std::string_view,
+           std::pair<const std::vector<char>, const file_type>>
+      files;
   const std::string_view public_path;
 
 public:
   file_cache(const std::string_view public_path) noexcept
       : public_path(public_path) {
+    std::vector<std::tuple<std::string, std::string, std::size_t, file_type>>
+        file_paths;
+    // file_path.substr(public_path.size()
     for (const auto &entry : std::filesystem::directory_iterator(public_path)) {
       // load only the first hierachy
       if (unlikely(!entry.is_regular_file()))
@@ -88,25 +79,53 @@ public:
       const auto type = get_file_type_for_path(file_path);
       if (unlikely(type == NOT_SUPPORTED))
         continue;
-      // so we can index the map with string_view
-      // and we dont need any allocations after init
-      file_paths.push_back(file_path.substr(public_path.size()));
-      const auto &file_path_in_vec = file_paths.back();
-      internal_file_data file_data(file_size, type);
+      file_paths.emplace_back(std::make_tuple(
+          std::move(file_path), file_path.substr(public_path.size()), file_size,
+          type));
+    }
+
+    file_path_vec.resize(std::accumulate(
+        std::begin(file_paths), std::end(file_paths), std::size_t{0},
+        [](const std::size_t current_size,
+           const std::tuple<std::string, std::string, std::size_t, file_type>
+               &tuple) { return current_size + std::get<1>(tuple).length(); }));
+
+    std::size_t file_path_buf_cursor = 0;
+    for (const auto &tuple : file_paths) {
+      const auto &file_path_without_public = std::get<1>(tuple);
+      const auto file_path_without_public_len =
+          file_path_without_public.length();
+
+      char *const file_path_buf = file_path_vec.data();
+      for (std::size_t i = 0; i < file_path_without_public_len; ++i)
+        file_path_buf[file_path_buf_cursor + i] =
+            file_path_without_public.data()[i];
+
+      const auto file_path_view = std::string_view(
+          &file_path_buf[file_path_buf_cursor], file_path_without_public_len);
+      file_path_buf_cursor += file_path_without_public_len;
+
+      const auto &file_path = std::get<0>(tuple);
       const int fd = openat(AT_FDCWD, file_path.c_str(), O_RDONLY);
       if (unlikely(fd < 0)) {
         std::cout << "Could not open: " << file_path << std::endl;
         continue;
       }
-      char *const buf = file_data.vec.data();
-      const ssize_t buf_size = file_data.vec.size();
+
+      auto internal_file_data = std::make_pair(
+          std::vector<char>(std::get<2>(tuple)), std::get<3>(tuple));
+      char *const file_buf = internal_file_data.first.data();
+      const ssize_t file_buf_size = internal_file_data.first.size();
       ssize_t nbytes = 0;
-      while (likely((nbytes = read(fd, &buf[nbytes], buf_size - nbytes)) > 0) &&
-             unlikely(nbytes < buf_size))
+
+      while (likely((nbytes = read(fd, &file_buf[nbytes],
+                                   file_buf_size - nbytes)) > 0) &&
+             unlikely(nbytes < file_buf_size))
         ;
-      close(fd);
-      if (likely(files.emplace(file_path_in_vec, std::move(file_data)).second))
-        std::cout << "Cached " << file_path_in_vec << std::endl;
+
+      if (likely(files.emplace(file_path_view, std::move(internal_file_data))
+                     .second))
+        std::cout << "Cached " << file_path_view << "XD" << std::endl;
     }
     std::cout << "Cache is ready!" << std::endl << std::endl;
   }
@@ -123,8 +142,9 @@ public:
     std::cout << "retrieved file: " << path << std::endl;
 #endif
     const auto &internal_file_data = file_data_it->second;
-    return file_data(internal_file_data.vec.data(),
-                     internal_file_data.vec.size(), internal_file_data.type);
+    return file_data(internal_file_data.first.data(),
+                     internal_file_data.first.size(),
+                     internal_file_data.second);
   }
 };
 
