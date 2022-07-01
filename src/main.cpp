@@ -41,7 +41,6 @@ static int on_connection_accepted_cb(networking::connection *const connection,
   if (unlikely(buf_p.rent_buf(connection->read_buf.buf, READ_BUF_SIZE)))
     return 1;
 
-  connection->read_buf.nbytes_read = 0;
   // lets start reading
   connection->event_interest = networking::READ;
 
@@ -208,6 +207,7 @@ static int on_connection_sent_cb(networking::connection *const connection,
              get_buf_size(connection->write_buf.buf))) {
     // give back write buf
     buf_p.hand_back_buf(connection->write_buf.buf);
+    connection->write_buf.nbytes_written = 0;
 
     const uint64_t connection_id = connection->user_data;
 
@@ -222,7 +222,6 @@ static int on_connection_sent_cb(networking::connection *const connection,
 
     if (unlikely(buf_p.rent_buf(connection->read_buf.buf, READ_BUF_SIZE)))
       return 1;
-    connection->read_buf.nbytes_read = 0;
     connection->event_interest = networking::READ;
   } else {
     // write again
@@ -246,19 +245,19 @@ static int on_connection_closed_cb(networking::connection *const connection,
 static networking::connection *before_connection_accept_cb() noexcept {
   const auto new_connection_id =
       connection_id.fetch_add(1, std::memory_order_relaxed);
-  networking::connection connection{};
-  connection.conn_fd = -1;
-  connection.user_data = new_connection_id;
-  connection.on_accepted_cb = on_connection_accepted_cb;
-  connection.on_recvd_cb = on_connection_recvd_cb;
-  connection.on_sent_cb = on_connection_sent_cb;
-  connection.on_closed_cb = on_connection_closed_cb;
-  connection.read_buf.nbytes_read = 0;
-  connection.write_buf.nbytes_written = 0;
   const auto res = connections_for_threads[current_thread].emplace(
-      new_connection_id, http_connection(connection));
-
+      new_connection_id, http_connection({
+                             .conn_fd = -1,
+                             .user_data = new_connection_id,
+                             .on_accepted_cb = on_connection_accepted_cb,
+                             .on_recvd_cb = on_connection_recvd_cb,
+                             .on_sent_cb = on_connection_sent_cb,
+                             .on_closed_cb = on_connection_closed_cb,
+                             .read_buf.nbytes_read = 0,
+                             .write_buf.nbytes_written = 0,
+                         }));
   if (likely(res.second)) {
+    // required because request starts uninitialized in broken state
     res.first->second.current_http_request.set_state(http::DONE);
     return &res.first->second.connection;
   }
@@ -277,7 +276,7 @@ inline void init() noexcept {
   register_before_connection_accept_cb(before_connection_accept_cb);
 }
 
-int main(int argc, const char *const *const argv) {
+int main(int argc, const char *const *const argv) noexcept {
   init();
 
   networking::server_loop(0, 3'000);
