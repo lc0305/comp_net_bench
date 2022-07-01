@@ -113,7 +113,7 @@ public:
         goto err;
 
       std::size_t header_pos = pos_header_start;
-      bool done = done;
+      bool done = false;
       while (likely(likely(header_pos =
                                parse_header_line(request, header_pos, done)) !=
                     std::string_view::npos) &&
