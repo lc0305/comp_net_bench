@@ -46,11 +46,11 @@ file_type_to_mime_str(const file::file_type type) noexcept {
   case file::JPG:
     return "image/jpeg";
   case file::TEXT_HTML:
-    return "text/html";
+    return "text/html; charset=utf-8";
   case file::APPLICATION_JAVASCRIPT:
-    return "application/javascript";
+    return "application/javascript; charset=utf-8";
   case file::APPLICATION_JSON:
-    return "application/json";
+    return "application/json; charset=utf-8";
   default:
     return "";
   }
@@ -107,13 +107,13 @@ public:
     // set date eventually
 
     if (likely(likely(f_type != file::NONE) &&
-               unlikely(unlikely((ret = std::snprintf(
-                                      &static_cast<char *>(
-                                          header_iov.iov_base)[cursor],
-                                      header_iov.iov_len - cursor,
-                                      "Content-Type: %s; charset=utf-8\r\n",
-                                      file_type_to_mime_str(f_type))) < 0) ||
-                        unlikely((cursor += ret) > header_iov.iov_len))))
+               unlikely(
+                   unlikely(
+                       (ret = std::snprintf(
+                            &static_cast<char *>(header_iov.iov_base)[cursor],
+                            header_iov.iov_len - cursor, "Content-Type: %s\r\n",
+                            file_type_to_mime_str(f_type))) < 0) ||
+                   unlikely((cursor += ret) > header_iov.iov_len))))
       return 0;
 
     if (likely(
