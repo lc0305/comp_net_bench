@@ -13,13 +13,13 @@ ifeq ($(UNAME_S),darwin)
 LFLAGS += -Wl,-dead_strip
 endif
 
-main: buf_pool.hpp common.hpp compress.hpp file_cache.hpp http_request_parser.hpp http_response.hpp http_status.hpp main.cpp networking.hpp
-	clang++ $(CFLAGS) $(CFLAGS_RELEASE) $(LFLAGS) main.cpp -o $(BIN)
+server: buf_pool.hpp common.hpp compress.hpp file_cache.hpp http_request_parser.hpp http_response.hpp http_status.hpp server.cpp networking.hpp
+	clang++ $(CFLAGS) $(CFLAGS_RELEASE) $(LFLAGS) server.cpp -o $(BIN)_server
 
-debug: buf_pool.hpp common.hpp compress.hpp file_cache.hpp http_request_parser.hpp http_response.hpp http_status.hpp main.cpp networking.hpp
-	clang++ $(CFLAGS) $(CFLAGS_DEBUG) $(LFLAGS) main.cpp -o $(BIN)
+debug: buf_pool.hpp common.hpp compress.hpp file_cache.hpp http_request_parser.hpp http_response.hpp http_status.hpp server.cpp networking.hpp
+	clang++ $(CFLAGS) $(CFLAGS_DEBUG) $(LFLAGS) server.cpp -o $(BIN)_server
 
 clean:
-	rm *.o *.so $(BIN)
+	rm *.o *.so $(BIN)*
 
 .PHONY: debug clean

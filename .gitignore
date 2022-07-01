@@ -12,4 +12,4 @@ build
 .cache
 .vscode
 compile_commands.json
-comp_net_bench
+comp_net_bench*
