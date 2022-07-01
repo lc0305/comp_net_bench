@@ -97,7 +97,7 @@ static int on_connection_recvd_cb(networking::connection *const connection,
                           response.build_header(http::NOT_FOUND)) == 0))
           goto err;
 
-        const auto header_buf_idx = write_buf.vecs.size() - 2;
+        const auto header_buf_idx = write_buf.vecs.size() - 1;
         const auto &header_iov = write_buf.vecs[header_buf_idx];
 
         if (likely(final_header_buf_size != header_iov.iov_len))
@@ -235,11 +235,11 @@ static int on_connection_closed_cb(networking::connection *const connection,
                                    const int res) noexcept {
   buf_p.hand_back_buf(connection->read_buf.buf);
   buf_p.hand_back_buf(connection->write_buf.buf);
-  connections_for_threads[current_thread].erase(connection->user_data);
 #ifdef BENCH_DEBUG_PRINT
   std::cout << "closed connection with fd: " << connection->conn_fd
             << " and id: " << connection->user_data << std::endl;
 #endif
+  connections_for_threads[current_thread].erase(connection->user_data);
   return 0;
 }
 
