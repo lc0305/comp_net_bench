@@ -1,0 +1,7 @@
+GET /IMG_2694.jpeg HTTP/1.1
+User-Agent: Mozilla/5.0
+Accept: text/html,image/jpeg
+Accept-Encoding: 
+Connection: Keep-Alive
+
+

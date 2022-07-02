@@ -1,0 +1,15 @@
+.*.swp
+*.o
+*.xo
+*.so
+*.d
+*.log
+*.elf
+*.hex
+.DS_Store
+
+build
+.cache
+.vscode
+compile_commands.json
+comp_net_bench*
