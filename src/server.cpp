@@ -2,7 +2,7 @@
 #include "common.hpp"
 #include "compress.hpp"
 #include "file_cache.hpp"
-#include "http_request_parser.hpp"
+#include "http_parser.hpp"
 #include "http_response.hpp"
 #include "networking.hpp"
 #include <array>
@@ -20,7 +20,8 @@ struct http_connection {
   http::http_parser current_http_request;
 
   inline http_connection(networking::connection connection)
-      : connection(connection), current_http_request(&connection.read_buf) {}
+      : connection(connection), current_http_request(&connection.read_buf.buf) {
+  }
 };
 
 typedef std::map<std::uint64_t, http_connection> connection_map_t;
@@ -54,7 +55,7 @@ static int on_connection_accepted_cb(networking::connection *const connection,
 
 static int on_connection_recvd_cb(networking::connection *const connection,
                                   const ssize_t nbytes) noexcept {
-  if (unlikely(nbytes < 0))
+  if (unlikely(nbytes <= 0))
     goto err;
   {
     const uint64_t connection_id = connection->user_data;
@@ -69,7 +70,8 @@ static int on_connection_recvd_cb(networking::connection *const connection,
     http_connection &http_conn = http_con_it->second;
 
     if (likely(http_conn.current_http_request.get_state() == http::DONE))
-      http_conn.current_http_request = http::http_parser(&connection->read_buf);
+      http_conn.current_http_request =
+          http::http_parser(&connection->read_buf.buf);
 
     http_conn.current_http_request.parse_request();
 

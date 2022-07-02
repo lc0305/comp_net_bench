@@ -40,7 +40,7 @@ private:
   http_method method;
   http_version version;
   http_status_code status;
-  const networking::read_buf_t *read_buf;
+  const networking::buf_t *net_buf;
   std::size_t parsed_bytes;
   std::string_view url;
   std::map<std::string_view, std::string_view> header;
@@ -83,15 +83,18 @@ private:
   }
 
 public:
-  inline http_parser(const networking::read_buf_t *const read_buf) noexcept
+  inline http_parser(const networking::buf_t *const net_buf) noexcept
       : state(PENDING), method(NO_METHOD), version(NO_VERSION),
-        status(NO_STATUS), read_buf(read_buf), parsed_bytes(0) {}
+        status(NO_STATUS), net_buf(net_buf), parsed_bytes(0) {}
 
   inline http_request_state parse_request() noexcept {
     this->state = PENDING;
-    for (const auto &iov : read_buf->buf.vecs) {
-      const auto request = std::string_view(
-          static_cast<const char *>(iov.iov_base), iov.iov_len);
+    if (unlikely(net_buf->vecs.size() <= 0))
+      return this->state;
+    const auto &iov = net_buf->vecs.back();
+    const auto request =
+        std::string_view(static_cast<const char *>(iov.iov_base), iov.iov_len);
+    {
       const auto pos_first_space = request.find(' ');
       if (unlikely(std::string_view::npos == pos_first_space)) {
 #ifdef BENCH_DEBUG_PRINT
@@ -170,10 +173,13 @@ public:
       }
 
       parsed_bytes += header_pos;
+      this->state = PARSED;
+      return this->state;
     }
-    this->state = PARSED;
-    return this->state;
   err:
+#ifdef BENCH_DEBUG_PRINT
+    std::cout << "error parsing request:" << std::endl << request << std::endl;
+#endif
     this->state = ERROR;
     return this->state;
   }
