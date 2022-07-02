@@ -34,7 +34,7 @@ enum http_version {
 #define HTTP_1_1_STR "HTTP/1.1"
 #define CR_LF_STR "\r\n"
 
-class http_request_parser {
+class http_parser {
 private:
   http_request_state state;
   http_method method;
@@ -83,12 +83,11 @@ private:
   }
 
 public:
-  inline http_request_parser(
-      const networking::read_buf_t *const read_buf) noexcept
+  inline http_parser(const networking::read_buf_t *const read_buf) noexcept
       : state(PENDING), method(NO_METHOD), version(NO_VERSION),
         status(NO_STATUS), read_buf(read_buf), parsed_bytes(0) {}
 
-  inline http_request_state parse_http() noexcept {
+  inline http_request_state parse_request() noexcept {
     this->state = PENDING;
     for (const auto &iov : read_buf->buf.vecs) {
       const auto request = std::string_view(

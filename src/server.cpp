@@ -17,7 +17,7 @@
 
 struct http_connection {
   networking::connection connection;
-  http::http_request_parser current_http_request;
+  http::http_parser current_http_request;
 
   inline http_connection(networking::connection connection)
       : connection(connection), current_http_request(&connection.read_buf) {}
@@ -69,10 +69,9 @@ static int on_connection_recvd_cb(networking::connection *const connection,
     http_connection &http_conn = http_con_it->second;
 
     if (likely(http_conn.current_http_request.get_state() == http::DONE))
-      http_conn.current_http_request =
-          http::http_request_parser(&connection->read_buf);
+      http_conn.current_http_request = http::http_parser(&connection->read_buf);
 
-    http_conn.current_http_request.parse_http();
+    http_conn.current_http_request.parse_request();
 
     switch (http_conn.current_http_request.get_state()) {
     case http::PARSED: {
@@ -192,6 +191,10 @@ static int on_connection_recvd_cb(networking::connection *const connection,
   return 0;
 
 err:
+#ifdef BENCH_DEBUG_PRINT
+  std::cout << "error closing connection " << connection->user_data
+            << std::endl;
+#endif
   connection->event_interest = networking::CLOSE;
   return 1;
 }
