@@ -106,17 +106,17 @@ public:
 
     // set date eventually
 
-    if (likely(likely(f_type != file::NONE) &&
-               unlikely(
-                   unlikely(
-                       (ret = std::snprintf(
-                            &static_cast<char *>(header_iov.iov_base)[cursor],
-                            header_iov.iov_len - cursor, "Content-Type: %s\r\n",
-                            file_type_to_mime_str(f_type))) < 0) ||
-                   unlikely((cursor += ret) > header_iov.iov_len))))
+    if (unlikely(likely(f_type != file::NONE) &&
+                 unlikely(unlikely((ret = std::snprintf(
+                                        &static_cast<char *>(
+                                            header_iov.iov_base)[cursor],
+                                        header_iov.iov_len - cursor,
+                                        "Content-Type: %s\r\n",
+                                        file_type_to_mime_str(f_type))) < 0) ||
+                          unlikely((cursor += ret) > header_iov.iov_len))))
       return 0;
 
-    if (likely(
+    if (unlikely(
             likely(comp_alg != compression::NONE) &&
             unlikely(
                 unlikely((ret = std::snprintf(
