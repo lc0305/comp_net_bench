@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cinttypes>
 #include <cstddef>
+#include <getopt.h>
 #include <iostream>
 #include <map>
 
@@ -28,7 +29,7 @@ typedef std::map<std::uint64_t, http_connection> connection_map_t;
 
 static std::array<connection_map_t, MAX_NUM_THREADS> connections_for_threads;
 static std::atomic<std::uint64_t> connection_id{0};
-static auto file_c = file::file_cache("./public");
+static file::file_cache *file_c = nullptr;
 static thread_local std::uint64_t current_thread = 0;
 static thread_local buffer::buf_pool buf_p;
 
@@ -81,7 +82,7 @@ static int on_connection_recvd_cb(networking::connection *const connection,
 #ifdef BENCH_DEBUG_PRINT
       std::cout << "url: " << url << std::endl;
 #endif
-      const auto file_data = file_c.get_file(url);
+      const auto file_data = file_c->get_file(url);
 
       if (unlikely(file_data.buf == nullptr)) {
         // return 404
@@ -275,17 +276,60 @@ init_connections_for_threads(std::array<connection_map_t, MAX_NUM_THREADS>
             std::end(connections_for_threads), connection_map_t());
 }
 
+typedef struct bench_args {
+  const char *public_folder = "./public";
+  uint16_t port = 3'000;
+} bench_args_t;
+static bench_args_t bench_args;
+static const char *const shortopts = "f:p:h";
+static const struct option long_options[] = {
+    {"public_folder", required_argument, NULL, 'f'},
+    {"port", required_argument, NULL, 'p'},
+    {"help", no_argument, NULL, 'h'}};
+static const char *const usage =
+    "Usage: %s [--public_folder <public folder with static files>] [--port "
+    "<port to listen on>] [--help (-h)]\n";
+
+static inline void read_bench_args(const int argc, char *const *argv,
+                                   bench_args_t *const bench_args) noexcept {
+  int option_index = 0, opt;
+  while ((opt = getopt_long(argc, argv, shortopts, long_options,
+                            &option_index)) != -1) {
+    switch (opt) {
+    case 'f':
+      bench_args->public_folder = optarg;
+      break;
+    case 'p':
+      bench_args->port = std::atoi(optarg);
+      break;
+    case 'h':
+      printf(usage, argv[0]);
+      exit(EXIT_SUCCESS);
+      break;
+    default:
+      fprintf(stderr, usage, argv[0]);
+      exit(EXIT_FAILURE);
+    }
+  }
+}
+
 inline void init() noexcept {
+  file_c = new file::file_cache(bench_args.public_folder);
   init_connections_for_threads(connections_for_threads);
   register_before_connection_accept_cb(before_connection_accept_cb);
 }
 
-int main(int argc, const char *const *const argv) noexcept {
+int main(int argc, char *const *const argv) noexcept {
+  read_bench_args(argc, argv, &bench_args);
   init();
-  networking::loop_config_t loop_config = {
-      .mode = networking::SERVER, .server.addr = 0, .server.port = 3'000};
+  networking::loop_config_t loop_config = {.mode = networking::SERVER,
+                                           .server.addr = 0,
+                                           .server.port = bench_args.port};
   if (unlikely(networking::loop_init(&loop_config)))
     return 1;
+  std::cout << "serving static files: " << bench_args.public_folder
+            << std::endl;
+  std::cout << "listening on port: " << bench_args.port << std::endl;
   while (likely(!networking::loop(&loop_config)))
     ;
   networking::loop_destruct(&loop_config);
