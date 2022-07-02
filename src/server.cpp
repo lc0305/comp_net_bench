@@ -37,7 +37,6 @@ static int on_connection_accepted_cb(networking::connection *const connection,
     connections_for_threads[current_thread].erase(connection->user_data);
     return 0;
   }
-  connection->conn_fd = res;
   if (unlikely(buf_p.rent_buf(connection->read_buf.buf, READ_BUF_SIZE)))
     return 1;
 
@@ -278,9 +277,12 @@ inline void init() noexcept {
 
 int main(int argc, const char *const *const argv) noexcept {
   init();
-
-  networking::net_loop(
-      {.mode = networking::SERVER, .server.addr = 0, .server.port = 3'000});
-
+  networking::loop_config_t loop_config = {
+      .mode = networking::SERVER, .server.addr = 0, .server.port = 3'000};
+  if (unlikely(networking::loop_init(&loop_config)))
+    return 1;
+  while (likely(!networking::loop(&loop_config)))
+    ;
+  networking::loop_destruct(&loop_config);
   return 0;
 }

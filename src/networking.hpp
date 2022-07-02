@@ -2,6 +2,7 @@
 #define __NETWORKING_H__
 
 #include "common.hpp"
+#include <arpa/inet.h>
 #include <cstring>
 #include <errno.h>
 #include <fcntl.h>
@@ -61,7 +62,7 @@ typedef struct write_buf {
   size_t nbytes_written;
 } write_buf_t;
 
-typedef enum loop_mode {
+typedef enum loop_mode : uint8_t {
   SERVER,
   CLIENT,
 } loop_mode_t;
@@ -114,7 +115,7 @@ typedef struct connection {
 typedef connection_t *(*before_connection_accept_cb_t)();
 typedef connection_t *(*before_connection_connect_cb_t)();
 
-static int listening_socket_init(uint32_t addr, uint16_t port) {
+static int listening_socket_init(uint32_t addr, uint16_t port) noexcept {
   const int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
   if (unlikely(sock_fd == -1))
     goto err_socket;
@@ -150,7 +151,7 @@ err_socket:
 
 static before_connection_accept_cb_t before_connection_accept = nullptr;
 inline int register_before_connection_accept_cb(
-    before_connection_accept_cb_t before_connection_accept_cb) {
+    before_connection_accept_cb_t before_connection_accept_cb) noexcept {
   before_connection_accept = before_connection_accept_cb;
   return 0;
 }
@@ -159,9 +160,10 @@ inline int register_before_connection_accept_cb(
 
 #define IO_URING_QUEUE_DEPTH (1 << 12)
 
-inline int add_accept_sqe_for_connection(struct io_uring *const ring,
-                                         int listening_sock_fd,
-                                         connection_t *const connection) {
+inline int
+add_accept_sqe_for_connection(struct io_uring *const ring,
+                              int listening_sock_fd,
+                              connection_t *const connection) noexcept {
   struct io_uring_sqe *const sqe = io_uring_get_sqe(ring);
   connection->addr_len = sizeof(connection->sock_addr);
   io_uring_prep_accept(
@@ -174,9 +176,10 @@ inline int add_accept_sqe_for_connection(struct io_uring *const ring,
   return 0;
 }
 
-inline int add_connect_sqe_for_connection(struct io_uring *const ring,
-                                          int connecting_sock_fd,
-                                          connection_t *const connection) {
+inline int
+add_connect_sqe_for_connection(struct io_uring *const ring,
+                               int connecting_sock_fd,
+                               connection_t *const connection) noexcept {
   struct io_uring_sqe *const sqe = io_uring_get_sqe(ring);
   connection->addr_len = sizeof(connection->sock_addr);
   io_uring_prep_connect(
@@ -190,8 +193,9 @@ inline int add_connect_sqe_for_connection(struct io_uring *const ring,
   return 0;
 }
 
-inline int add_read_sqe_for_connection(struct io_uring *const ring,
-                                       connection_t *const connection) {
+inline int
+add_read_sqe_for_connection(struct io_uring *const ring,
+                            connection_t *const connection) noexcept {
   struct io_uring_sqe *const sqe = io_uring_get_sqe(ring);
   size_t should_be_read = 0;
   const size_t nbytes_read = connection->read_buf.nbytes_read;
@@ -215,8 +219,9 @@ inline int add_read_sqe_for_connection(struct io_uring *const ring,
   return 0;
 }
 
-inline int add_write_sqe_for_connection(struct io_uring *const ring,
-                                        connection_t *const connection) {
+inline int
+add_write_sqe_for_connection(struct io_uring *const ring,
+                             connection_t *const connection) noexcept {
   struct io_uring_sqe *const sqe = io_uring_get_sqe(ring);
   size_t should_be_written = 0;
   const size_t nbytes_written = connection->write_buf.nbytes_written;
@@ -240,8 +245,9 @@ inline int add_write_sqe_for_connection(struct io_uring *const ring,
   return 0;
 }
 
-inline int add_close_sqe_for_connection(struct io_uring *const ring,
-                                        connection_t *const connection) {
+inline int
+add_close_sqe_for_connection(struct io_uring *const ring,
+                             connection_t *const connection) noexcept {
   struct io_uring_sqe *const sqe = io_uring_get_sqe(ring);
   io_uring_prep_close(sqe, connection->conn_fd);
   io_uring_sqe_set_data(sqe, connection);
@@ -250,63 +256,106 @@ inline int add_close_sqe_for_connection(struct io_uring *const ring,
   return 0;
 }
 
-// inline int establish_connection_to_addr(connection_t *const connection, const
-// char *const addr, const uint16_t port) noexcept {
-//   add_connect_sqe_for_connection(, connection);
-
-//   io_uring_submit(&ring);
-//   return 0;
-// }
-
-typedef struct loop_init {
+typedef struct loop_config {
   loop_mode_t mode;
   union {
     struct {
+      int _listening_sock_fd;
       uint32_t addr;
       uint16_t port;
     } server;
     struct {
     } client;
   };
-} loop_init_t;
+  struct io_uring _ring;
+} loop_config_t;
 
-inline int net_loop(loop_init_t loop_init) noexcept {
-  int listening_sock_fd = -1;
-  struct io_uring ring;
+inline int establish_connection_to_addr(loop_config_t *const loop_config,
+                                        connection_t *const connection,
+                                        const char *const addr,
+                                        const uint16_t port) noexcept {
+  std::memset(&connection->sock_addr, 0, sizeof(connection->sock_addr));
+  connection->sock_addr.sin_family = AF_INET;
+  connection->sock_addr.sin_port = htons(port);
+  if (unlikely(inet_pton(AF_INET, addr, &connection->sock_addr.sin_addr) <= 0))
+    goto err_socket;
 
-  if (loop_init.mode == SERVER) {
+  {
+    const int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (unlikely(sock_fd == -1))
+      goto err_socket;
+
+    add_connect_sqe_for_connection(&loop_config->_ring, sock_fd, connection);
+    io_uring_submit(&loop_config->_ring);
+  }
+
+  return 0;
+err_socket:
+  return -1;
+}
+
+inline int loop_destruct(loop_config_t *const loop_config) noexcept {
+  if (loop_config->server._listening_sock_fd >= 0)
+    close(loop_config->server._listening_sock_fd);
+  return 0;
+}
+
+inline int loop_init(loop_config_t *const loop_config) noexcept {
+  loop_config->server._listening_sock_fd = -1;
+
+  if (loop_config->mode == SERVER) {
     if (unlikely(before_connection_accept == nullptr))
       return 1;
 
-    listening_sock_fd =
-        listening_socket_init(loop_init.server.addr, loop_init.server.port);
-    if (unlikely(listening_sock_fd < 0))
+    loop_config->server._listening_sock_fd = listening_socket_init(
+        loop_config->server.addr, loop_config->server.port);
+    if (unlikely(loop_config->server._listening_sock_fd < 0))
       return -1;
 
-    if (unlikely(io_uring_queue_init(IO_URING_QUEUE_DEPTH, &ring, 0)))
+    if (unlikely(
+            io_uring_queue_init(IO_URING_QUEUE_DEPTH, &loop_config->_ring, 0)))
       goto err_queue_init;
 
     {
       connection_t *const connection = before_connection_accept();
       if (unlikely(connection == nullptr))
         goto err_before_connection_accept;
-      add_accept_sqe_for_connection(&ring, listening_sock_fd, connection);
+      add_accept_sqe_for_connection(&loop_config->_ring,
+                                    loop_config->server._listening_sock_fd,
+                                    connection);
     }
+
+    io_uring_submit(&loop_config->_ring);
+    return 0;
   }
 
-  io_uring_submit(&ring);
+  if (unlikely(
+          io_uring_queue_init(IO_URING_QUEUE_DEPTH, &loop_config->_ring, 0)))
+    goto err_queue_init;
+  return 0;
 
+err_before_connection_accept:
+// somehow destruct ring
+err_queue_init:
+  loop_destruct(loop_config);
+  perror(NULL);
+  return -1;
+}
+
+inline int loop(loop_config_t *const loop_config) noexcept {
+#ifdef BENCH_DEBUG_PRINT
   std::cout << "io_uring: entering event loop..." << std::endl;
+#endif
 
   struct io_uring_cqe *cqe;
-  for (;;) {
-    const int ret = io_uring_wait_cqe(&ring, &cqe);
+  const int ret = io_uring_wait_cqe(&loop_config->_ring, &cqe);
 #ifdef BENCH_DEBUG_PRINT
-    std::cout << "io_uring: event incoming ret: " << ret << std::endl;
+  std::cout << "io_uring: event incoming ret: " << ret << std::endl;
 #endif
-    if (unlikely(ret < 0))
-      goto err_wait_cqe;
+  if (unlikely(ret < 0))
+    goto err_wait_cqe;
 
+  {
     connection_t *const connection = (connection_t *)cqe->user_data;
     const int res = cqe->res;
 
@@ -361,7 +410,9 @@ inline int net_loop(loop_init_t loop_init) noexcept {
           connection_t *const connection = before_connection_accept();
           if (unlikely(connection == NULL))
             goto seen;
-          add_accept_sqe_for_connection(&ring, listening_sock_fd, connection);
+          add_accept_sqe_for_connection(&loop_config->_ring,
+                                        loop_config->server._listening_sock_fd,
+                                        connection);
         }
         if (unlikely(connection->conn_state != ACCEPTED))
           goto submit_and_seen;
@@ -391,7 +442,7 @@ inline int net_loop(loop_init_t loop_init) noexcept {
           connection->write_buf.nbytes_written += res;
           if (unlikely(connection->write_buf.nbytes_written <
                        get_buf_size(connection->write_buf.buf))) {
-            add_write_sqe_for_connection(&ring, connection);
+            add_write_sqe_for_connection(&loop_config->_ring, connection);
             goto submit_and_seen;
           }
         }
@@ -404,13 +455,13 @@ inline int net_loop(loop_init_t loop_init) noexcept {
       case NONE:
         goto seen;
       case RECEIVE:
-        add_read_sqe_for_connection(&ring, connection);
+        add_read_sqe_for_connection(&loop_config->_ring, connection);
         break;
       case SEND:
-        add_write_sqe_for_connection(&ring, connection);
+        add_write_sqe_for_connection(&loop_config->_ring, connection);
         break;
       case CLOSE:
-        add_close_sqe_for_connection(&ring, connection);
+        add_close_sqe_for_connection(&loop_config->_ring, connection);
         break;
       }
       goto submit_and_seen;
@@ -442,18 +493,13 @@ inline int net_loop(loop_init_t loop_init) noexcept {
 #ifdef BENCH_DEBUG_PRINT
     std::cout << "io_uring: submit and seen" << std::endl;
 #endif
-    io_uring_submit(&ring);
+    io_uring_submit(&loop_config->_ring);
   seen:
-    io_uring_cqe_seen(&ring, cqe);
+    io_uring_cqe_seen(&loop_config->_ring, cqe);
   }
 
   return 0;
-err_before_connection_accept:
 err_wait_cqe:
-// todo destruct ring
-err_queue_init:
-  close(listening_sock_fd);
-  perror(NULL);
   return 1;
 }
 
