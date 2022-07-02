@@ -431,14 +431,25 @@ inline int loop(loop_config_t *const loop_config) noexcept {
         break;
       case RECEIVING: {
       receiving:
-        if (likely(res > 0))
+        if (likely(res >= 0)) {
+#ifdef BENCH_DEBUG_PRINT
+          std::cout << "received " << res
+                    << " bytes for connection: " << connection->user_data
+                    << std::endl;
+#endif
           connection->read_buf.nbytes_read += res;
+        }
         connection->on_recvd_cb(connection, res);
         break;
       }
       case SENDING: {
       sending:
         if (likely(res > 0)) {
+#ifdef BENCH_DEBUG_PRINT
+          std::cout << "sent " << res
+                    << " bytes for connection: " << connection->user_data
+                    << std::endl;
+#endif
           connection->write_buf.nbytes_written += res;
           if (unlikely(connection->write_buf.nbytes_written <
                        get_buf_size(connection->write_buf.buf))) {
@@ -459,6 +470,10 @@ inline int loop(loop_config_t *const loop_config) noexcept {
         break;
       case SEND:
         add_write_sqe_for_connection(&loop_config->_ring, connection);
+#ifdef BENCH_DEBUG_PRINT
+        std::cout << "added write sqe for connection: " << connection->user_data
+                  << std::endl;
+#endif
         break;
       case CLOSE:
         add_close_sqe_for_connection(&loop_config->_ring, connection);

@@ -87,7 +87,7 @@ public:
       : state(PENDING), method(NO_METHOD), version(NO_VERSION),
         status(NO_STATUS), net_buf(net_buf), parsed_bytes(0) {}
 
-  inline http_request_state parse_request() noexcept {
+  inline http_request_state parse_request_header() noexcept {
     this->state = PENDING;
     if (unlikely(net_buf->vecs.size() <= 0))
       return this->state;
@@ -184,6 +184,100 @@ public:
     return this->state;
   }
 
+  inline http_request_state parse_response_header() noexcept {
+    this->state = PENDING;
+    if (unlikely(net_buf->vecs.size() <= 0))
+      return this->state;
+    const auto &iov = net_buf->vecs.back();
+    const auto response =
+        std::string_view(static_cast<const char *>(iov.iov_base), iov.iov_len);
+    {
+      const auto pos_first_space = response.find(' ');
+      if (unlikely(std::string_view::npos == pos_first_space)) {
+#ifdef BENCH_DEBUG_PRINT
+        std::cout << "http parsing error: could not extract first space"
+                  << std::endl;
+#endif
+        goto err;
+      }
+      // we only support 1.1 right now
+      if (unlikely(std::string_view::npos ==
+                   response.find(HTTP_1_1_STR, 0, sizeof(HTTP_1_1_STR) - 1))) {
+#ifdef BENCH_DEBUG_PRINT
+        std::cout << "http parsing error: could not extract HTTP version"
+                  << std::endl;
+#endif
+        goto err;
+      }
+      this->version = VERSION_1_1;
+      const auto pos_status_start = pos_first_space + 1;
+      const auto pos_second_space = response.find(' ', pos_status_start);
+      if (unlikely(std::string_view::npos == pos_second_space)) {
+#ifdef BENCH_DEBUG_PRINT
+        std::cout << "http parsing error: could not extract second space"
+                  << std::endl;
+#endif
+        goto err;
+      }
+
+      const auto status_res = to_int<int>(response.substr(
+          pos_status_start, pos_second_space - pos_status_start));
+      if (unlikely(!status_res.has_value())) {
+#ifdef BENCH_DEBUG_PRINT
+        std::cout << "http parsing error: could not parse status" << std::endl;
+#endif
+        goto err;
+      }
+      this->status = static_cast<http_status_code>(status_res.value());
+
+      const auto pos_first_cr_lf =
+          response.find(CR_LF_STR, pos_second_space + 1);
+      if (unlikely(std::string_view::npos == pos_first_cr_lf)) {
+#ifdef BENCH_DEBUG_PRINT
+        std::cout << "http parsing error: could not extract first CR LF"
+                  << std::endl;
+#endif
+        goto err;
+      }
+
+      const auto pos_header_start = pos_first_cr_lf + sizeof(CR_LF_STR) - 1;
+      if (unlikely(pos_header_start >= response.size())) {
+#ifdef BENCH_DEBUG_PRINT
+        std::cout
+            << "http parsing error: header start greater than response size"
+            << std::endl;
+#endif
+        goto err;
+      }
+
+      std::size_t header_pos = pos_header_start;
+      bool done = false;
+      while (likely(
+          likely((header_pos = parse_header_line(response, header_pos, done)) !=
+                 std::string_view::npos) &&
+          likely(!done)))
+        ;
+
+      if (unlikely(!done)) {
+#ifdef BENCH_DEBUG_PRINT
+        std::cout << "http parsing error: http request does not end with LF"
+                  << std::endl;
+#endif
+        goto err;
+      }
+
+      parsed_bytes += header_pos;
+      this->state = PARSED;
+      return this->state;
+    }
+  err:
+#ifdef BENCH_DEBUG_PRINT
+    std::cout << "error parsing request:" << std::endl << response << std::endl;
+#endif
+    this->state = ERROR;
+    return this->state;
+  }
+
   inline void set_state(const http_request_state state) noexcept {
     this->state = state;
   }
@@ -224,6 +318,31 @@ public:
       return compression::DEFLATE;
 
     return compression::NONE;
+  }
+
+  inline ssize_t get_content_length() noexcept {
+    const auto content_length = get_header_value_for_field("Content-Length");
+
+    if (unlikely(content_length.empty()))
+      return -1;
+
+    const auto length_res = to_int<ssize_t>(content_length);
+
+    if (unlikely(!length_res.has_value())) {
+#ifdef BENCH_DEBUG_PRINT
+      std::cout << "could not get content length" << std::endl;
+#endif
+      return -1;
+    }
+
+    return length_res.value();
+  }
+
+  inline ssize_t get_total_reponse_size() noexcept {
+    const auto content_length = get_content_length();
+    if (unlikely(content_length < 0))
+      return -1;
+    return content_length + parsed_bytes + sizeof(CR_LF);
   }
 };
 

@@ -73,7 +73,7 @@ static int on_connection_recvd_cb(networking::connection *const connection,
       http_conn.current_http_request =
           http::http_parser(&connection->read_buf.buf);
 
-    http_conn.current_http_request.parse_request();
+    http_conn.current_http_request.parse_request_header();
 
     switch (http_conn.current_http_request.get_state()) {
     case http::PARSED: {

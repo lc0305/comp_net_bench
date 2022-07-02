@@ -13,13 +13,19 @@ ifeq ($(UNAME_S),darwin)
 LFLAGS += -Wl,-dead_strip
 endif
 
-server: buf_pool.hpp common.hpp compress.hpp file_cache.hpp http_request_parser.hpp http_response.hpp http_status.hpp server.cpp networking.hpp
+server: buf_pool.hpp common.hpp compress.hpp file_cache.hpp http_parser.hpp http_response.hpp http_status.hpp server.cpp networking.hpp
 	clang++ $(CFLAGS) $(CFLAGS_RELEASE) $(LFLAGS) server.cpp -o $(BIN)_server
 
-debug: buf_pool.hpp common.hpp compress.hpp file_cache.hpp http_request_parser.hpp http_response.hpp http_status.hpp server.cpp networking.hpp
+client: buf_pool.hpp common.hpp client.cpp networking.hpp
+	clang++ $(CFLAGS) $(CFLAGS_RELEASE) $(LFLAGS) client.cpp -o $(BIN)_client
+
+debug: buf_pool.hpp common.hpp compress.hpp file_cache.hpp http_parser.hpp http_response.hpp http_status.hpp server.cpp networking.hpp
 	clang++ $(CFLAGS) $(CFLAGS_DEBUG) $(LFLAGS) server.cpp -o $(BIN)_server
 
-clean:
-	rm *.o *.so $(BIN)*
+debug_client: buf_pool.hpp common.hpp client.cpp networking.hpp
+	clang++ $(CFLAGS) $(CFLAGS_DEBUG) $(LFLAGS) client.cpp -o $(BIN)_client
 
-.PHONY: debug clean
+clean:
+	rm *.o *.so *.a $(BIN)*
+
+.PHONY: client debug debug_client clean

@@ -1,8 +1,10 @@
 #ifndef __COMMON_H__
 #define __COMMON_H__
 
+#include <charconv>
 #include <cinttypes>
 #include <climits>
+#include <optional>
 #include <string_view>
 
 #define expect(expr, value) (__builtin_expect((expr), (value)))
@@ -22,6 +24,17 @@ constexpr std::uint32_t ceiled_log2(std::uint32_t value) noexcept {
 constexpr bool contains(const std::string_view where,
                         const char *const what) noexcept {
   return std::string_view::npos != where.find(what);
+}
+
+template <typename T>
+constexpr std::optional<T> to_int(const std::string_view input) {
+  T out;
+  const std::from_chars_result result =
+      std::from_chars(input.data(), input.data() + input.size(), out);
+  if (unlikely(unlikely(result.ec == std::errc::invalid_argument) ||
+               unlikely(result.ec == std::errc::result_out_of_range)))
+    return std::nullopt;
+  return out;
 }
 
 template <typename T>
