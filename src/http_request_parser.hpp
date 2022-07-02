@@ -57,14 +57,25 @@ private:
       return std::string_view::npos;
 
     const auto header_value_start = pos_colon + 2;
-    header.emplace(
-        request.substr(line_start, pos_colon - line_start),
-        request.substr(header_value_start, pos_cr_lf - header_value_start));
-
+    {
+      const auto pair = header.emplace(
+          request.substr(line_start, pos_colon - line_start),
+          request.substr(header_value_start, pos_cr_lf - header_value_start));
+#ifdef BENCH_DEBUG_PRINT
+      if (pair.second)
+        std::cout << "Inserted field: " << pair.first->first
+                  << " with value: " << pair.first->second << std::endl;
+#endif
+    }
     const auto next_line_start = pos_cr_lf + sizeof(CR_LF_STR) - 1;
     const auto potential_end_of_header = next_line_start + 1;
-    if (unlikely(likely(request.size() > potential_end_of_header) &&
-                 request.at(potential_end_of_header) == '\n')) {
+    if (unlikely(
+            likely(request.size() > potential_end_of_header) &&
+            // check potential_end_of_header and potential_end_of_header - 1 due
+            // to spaces
+            unlikely(
+                unlikely(request.at(potential_end_of_header - 1) == '\n') ||
+                unlikely(request.at(potential_end_of_header) == '\n')))) {
       done = true;
       return potential_end_of_header;
     }
@@ -83,34 +94,65 @@ public:
       const auto request = std::string_view(
           static_cast<const char *>(iov.iov_base), iov.iov_len);
       const auto pos_first_space = request.find(' ');
-      if (unlikely(std::string_view::npos == pos_first_space))
+      if (unlikely(std::string_view::npos == pos_first_space)) {
+#ifdef BENCH_DEBUG_PRINT
+        std::cout << "http parsing error: could not extract first space"
+                  << std::endl;
+#endif
         goto err;
+      }
       // we only support get right now
       if (unlikely(std::string_view::npos ==
-                   request.find(GET_STR, 0, sizeof(GET_STR) - 1)))
+                   request.find(GET_STR, 0, sizeof(GET_STR) - 1))) {
+#ifdef BENCH_DEBUG_PRINT
+        std::cout << "http parsing error: could not extract HTTP method"
+                  << std::endl;
+#endif
         goto err;
+      }
       this->method = HTTP_GET;
       const auto pos_url_start = pos_first_space + 1;
       const auto pos_second_space = request.find(' ', pos_url_start);
-      if (unlikely(std::string_view::npos == pos_second_space))
+      if (unlikely(std::string_view::npos == pos_second_space)) {
+#ifdef BENCH_DEBUG_PRINT
+        std::cout << "http parsing error: could not extract second space"
+                  << std::endl;
+#endif
         goto err;
+      }
       this->url =
           request.substr(pos_url_start, pos_second_space - pos_url_start);
 
       const auto pos_first_cr_lf =
           request.find(CR_LF_STR, pos_second_space + 1);
-      if (unlikely(std::string_view::npos == pos_first_cr_lf))
+      if (unlikely(std::string_view::npos == pos_first_cr_lf)) {
+#ifdef BENCH_DEBUG_PRINT
+        std::cout << "http parsing error: could not extract first CR LF"
+                  << std::endl;
+#endif
         goto err;
+      }
       // we only support 1.1 right now
       if (unlikely(std::string_view::npos ==
                    request.find(HTTP_1_1_STR, pos_second_space + 1,
-                                sizeof(HTTP_1_1_STR) - 1)))
+                                sizeof(HTTP_1_1_STR) - 1))) {
+#ifdef BENCH_DEBUG_PRINT
+        std::cout << "http parsing error: could not extract HTTP version"
+                  << std::endl;
+#endif
         goto err;
+      }
       this->version = VERSION_1_1;
 
       const auto pos_header_start = pos_first_cr_lf + sizeof(CR_LF_STR) - 1;
-      if (unlikely(pos_header_start >= request.size()))
+      if (unlikely(pos_header_start >= request.size())) {
+#ifdef BENCH_DEBUG_PRINT
+        std::cout
+            << "http parsing error: header start greater than request size"
+            << std::endl;
+#endif
         goto err;
+      }
 
       std::size_t header_pos = pos_header_start;
       bool done = false;
@@ -120,8 +162,13 @@ public:
           likely(!done)))
         ;
 
-      if (unlikely(!done))
+      if (unlikely(!done)) {
+#ifdef BENCH_DEBUG_PRINT
+        std::cout << "http parsing error: http request does not end with LF"
+                  << std::endl;
+#endif
         goto err;
+      }
 
       parsed_bytes += header_pos;
     }
