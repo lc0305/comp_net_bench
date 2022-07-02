@@ -338,7 +338,7 @@ public:
     return length_res.value();
   }
 
-  inline ssize_t get_total_reponse_size() noexcept {
+  inline ssize_t get_total_response_size() noexcept {
     const auto content_length = get_content_length();
     if (unlikely(content_length < 0))
       return -1;
