@@ -90,7 +90,7 @@ bool headers_parsed = false;
 static int on_connection_recvd_cb(networking::connection *const connection,
                                   const ssize_t res) noexcept {
   const auto pair_it = http_connection_map.find(connection->user_data);
-  if (pair_it == std::end(http_connection_map))
+  if (unlikely(pair_it == std::end(http_connection_map)))
     return 1;
   auto &http_connection = pair_it->second;
 
@@ -224,7 +224,7 @@ static std::atomic<int> finished_threads{0};
 
 void worker(std::int64_t connections) noexcept {
   networking::loop_config_t loop_config = {.mode = networking::CLIENT};
-  if (networking::loop_init(&loop_config))
+  if (unlikely(networking::loop_init(&loop_config)))
     std::perror(nullptr);
 
   for (std::int64_t n = 0; n < connections; ++n) {
