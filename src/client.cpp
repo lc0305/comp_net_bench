@@ -13,6 +13,7 @@
 #include <iostream>
 #include <map>
 #include <string_view>
+#include <thread>
 #include <tuple>
 
 #define REQUEST_MAX_SIZE (1 << 12)
@@ -215,14 +216,18 @@ static inline void read_bench_args(const int argc, char *const *argv,
   }
 }
 
-int main(int argc, char *const *const argv) noexcept {
-  read_bench_args(argc, argv, &bench_args);
+static std::chrono::_V2::system_clock::time_point start;
+static std::chrono::_V2::system_clock::time_point end;
 
+static std::atomic<int> ready_threads{0};
+static std::atomic<int> finished_threads{0};
+
+void worker(std::int64_t connections) noexcept {
   networking::loop_config_t loop_config = {.mode = networking::CLIENT};
   if (networking::loop_init(&loop_config))
     std::perror(nullptr);
 
-  for (std::int64_t n = 0; n < bench_args.connections; ++n) {
+  for (std::int64_t n = 0; n < connections; ++n) {
     networking::connection_t connection = {
         .conn_fd = -1,
         .read_buf.nbytes_read = 0,
@@ -246,16 +251,52 @@ int main(int argc, char *const *const argv) noexcept {
             bench_args.port)))
       std::perror(nullptr);
   }
-  const auto start = std::chrono::high_resolution_clock::now();
+
+  ready_threads.fetch_add(1, std::memory_order_relaxed);
+
+  // spinning and waiting for other threads to be ready;
+  while (ready_threads.load(std::memory_order_relaxed) < bench_args.threads)
+    ;
+
+  start = std::chrono::high_resolution_clock::now();
   while (likely(likely(!networking::loop(&loop_config) &&
                        likely(request_count.load(std::memory_order_relaxed) <
                               bench_args.requests))))
     ;
-  const auto end = std::chrono::high_resolution_clock::now();
-  std::chrono::duration<double> elapsed = end - start;
-  std::cout << "elapsed time: " << elapsed.count() << "s\n";
+
+  const auto currently_finished_threads =
+      finished_threads.fetch_add(1, std::memory_order_relaxed);
+
+  if (currently_finished_threads == bench_args.threads - 1)
+    end = std::chrono::high_resolution_clock::now();
+
   for (const auto &pair : http_connection_map)
     close(std::get<0>(pair.second).conn_fd);
   networking::loop_destruct(&loop_config);
+}
+
+constexpr int ceiled_int_div(int x, int y) noexcept {
+  return !!x + ((x - !!x) / y);
+}
+
+int main(int argc, char *const *const argv) noexcept {
+  read_bench_args(argc, argv, &bench_args);
+
+  int connections = bench_args.connections;
+  const int connections_per_thread =
+      ceiled_int_div(connections, bench_args.threads);
+
+  std::vector<std::thread> thread_handles;
+  for (int i = 1; i < bench_args.threads; ++i) {
+    thread_handles.emplace_back(std::thread(worker, connections_per_thread));
+    connections -= connections_per_thread;
+  }
+  worker(connections);
+
+  for (auto &thread_handle : thread_handles)
+    thread_handle.join();
+
+  std::chrono::duration<double> elapsed = end - start;
+  std::cout << "elapsed time: " << elapsed.count() << "s\n";
   return 0;
 }
