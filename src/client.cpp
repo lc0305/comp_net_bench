@@ -222,7 +222,7 @@ static std::chrono::_V2::system_clock::time_point end;
 static std::atomic<int> ready_threads{0};
 static std::atomic<int> finished_threads{0};
 
-void worker(std::int64_t connections) noexcept {
+static void worker(std::int64_t connections) noexcept {
   networking::loop_config_t loop_config = {.mode = networking::CLIENT};
   if (unlikely(networking::loop_init(&loop_config)))
     std::perror(nullptr);
