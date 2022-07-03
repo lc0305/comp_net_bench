@@ -7,11 +7,13 @@
 #include "networking.hpp"
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cinttypes>
 #include <cstddef>
 #include <getopt.h>
 #include <iostream>
 #include <map>
+#include <thread>
 
 #define MAX_NUM_THREADS 64
 #define READ_BUF_SIZE (1 << 12)
@@ -25,18 +27,16 @@ struct http_connection {
   }
 };
 
-typedef std::map<std::uint64_t, http_connection> connection_map_t;
-
-static std::array<connection_map_t, MAX_NUM_THREADS> connections_for_threads;
+static thread_local std::map<std::uint64_t, http_connection> http_connections;
 static std::atomic<std::uint64_t> connection_id{0};
 static file::file_cache *file_c = nullptr;
-static thread_local std::uint64_t current_thread = 0;
+static thread_local int current_thread = 0;
 static thread_local buffer::buf_pool buf_p;
 
 static int on_connection_accepted_cb(networking::connection *const connection,
                                      const int res) noexcept {
   if (unlikely(res <= 0)) {
-    connections_for_threads[current_thread].erase(connection->user_data);
+    http_connections.erase(connection->user_data);
     return 0;
   }
   if (unlikely(buf_p.rent_buf(connection->read_buf.buf, READ_BUF_SIZE)))
@@ -46,13 +46,16 @@ static int on_connection_accepted_cb(networking::connection *const connection,
   connection->event_interest = networking::RECEIVE;
 
 #ifdef BENCH_DEBUG_PRINT
-  std::cout << "accepted connection with fd: " << connection->conn_fd
+  std::cout << "[worker " << current_thread
+            << "] accepted connection with fd: " << connection->conn_fd
             << " and id: " << connection->user_data << std::endl;
 #endif
   return 0;
 }
 
 #define RESPONSE_HEADER_MAX_SIZE (1 << 12)
+
+static thread_local double time_spent_compressing = 0.0;
 
 static int on_connection_recvd_cb(networking::connection *const connection,
                                   const ssize_t nbytes) noexcept {
@@ -61,11 +64,9 @@ static int on_connection_recvd_cb(networking::connection *const connection,
   {
     const uint64_t connection_id = connection->user_data;
 
-    const auto http_con_it =
-        connections_for_threads[current_thread].find(connection_id);
+    const auto http_con_it = http_connections.find(connection_id);
 
-    if (unlikely(http_con_it ==
-                 std::end(connections_for_threads[current_thread])))
+    if (unlikely(http_con_it == std::end(http_connections)))
       goto err;
 
     http_connection &http_conn = http_con_it->second;
@@ -133,6 +134,7 @@ static int on_connection_recvd_cb(networking::connection *const connection,
         const auto &content_iov = write_buf.vecs[content_buf_idx],
                    &header_iov = write_buf.vecs[header_buf_idx];
 
+        const auto start = std::chrono::high_resolution_clock::now();
         std::size_t compressed_size;
         while (unlikely((compressed_size = compress_buf(
                              file_data.buf, file_data.size,
@@ -146,6 +148,12 @@ static int on_connection_recvd_cb(networking::connection *const connection,
           if (unlikely(buf_p.resize_buf(write_buf, content_buf_idx,
                                         1 << new_buf_log2)))
             goto err;
+        }
+        {
+          const auto end = std::chrono::high_resolution_clock::now();
+          const std::chrono::duration<double> elapsed_duration = end - start;
+          const double elapsed = elapsed_duration.count();
+          time_spent_compressing += elapsed;
         }
 
         auto response = http::http_response(connection->write_buf);
@@ -216,11 +224,9 @@ static int on_connection_sent_cb(networking::connection *const connection,
 
     const uint64_t connection_id = connection->user_data;
 
-    const auto http_con_it =
-        connections_for_threads[current_thread].find(connection_id);
+    const auto http_con_it = http_connections.find(connection_id);
 
-    if (unlikely(http_con_it ==
-                 std::end(connections_for_threads[current_thread])))
+    if (unlikely(http_con_it == std::end(http_connections)))
       return 1;
 
     http_con_it->second.current_http_request.set_state(http::DONE);
@@ -243,14 +249,14 @@ static int on_connection_closed_cb(networking::connection *const connection,
   std::cout << "closed connection with fd: " << connection->conn_fd
             << " and id: " << connection->user_data << std::endl;
 #endif
-  connections_for_threads[current_thread].erase(connection->user_data);
+  http_connections.erase(connection->user_data);
   return 0;
 }
 
 static networking::connection *before_connection_accept_cb() noexcept {
   const auto new_connection_id =
       connection_id.fetch_add(1, std::memory_order_relaxed);
-  const auto res = connections_for_threads[current_thread].emplace(
+  const auto res = http_connections.emplace(
       new_connection_id, http_connection({
                              .conn_fd = -1,
                              .read_buf.nbytes_read = 0,
@@ -269,25 +275,21 @@ static networking::connection *before_connection_accept_cb() noexcept {
   return nullptr;
 }
 
-inline void
-init_connections_for_threads(std::array<connection_map_t, MAX_NUM_THREADS>
-                                 &connections_for_threads) noexcept {
-  std::fill(std::begin(connections_for_threads),
-            std::end(connections_for_threads), connection_map_t());
-}
-
 typedef struct bench_args {
   const char *public_folder = "./public";
+  int threads = 1;
   uint16_t port = 3'000;
 } bench_args_t;
 static bench_args_t bench_args;
-static const char *const shortopts = "f:p:h";
+static const char *const shortopts = "t:f:p:h";
 static const struct option long_options[] = {
+    {"threads", required_argument, NULL, 't'},
     {"public_folder", required_argument, NULL, 'f'},
     {"port", required_argument, NULL, 'p'},
     {"help", no_argument, NULL, 'h'}};
 static const char *const usage =
-    "Usage: %s [--public_folder <public folder with static files>] [--port "
+    "Usage: %s [--threads (-t) <number of threads>] [--public_folder <public "
+    "folder with static files>] [--port "
     "<port to listen on>] [--help (-h)]\n";
 
 static inline void read_bench_args(const int argc, char *const *argv,
@@ -296,6 +298,11 @@ static inline void read_bench_args(const int argc, char *const *argv,
   while ((opt = getopt_long(argc, argv, shortopts, long_options,
                             &option_index)) != -1) {
     switch (opt) {
+    case 't':
+      bench_args->threads = std::atoi(optarg);
+      if (unlikely(bench_args->threads > MAX_NUM_THREADS))
+        exit(EXIT_FAILURE);
+      break;
     case 'f':
       bench_args->public_folder = optarg;
       break;
@@ -315,23 +322,39 @@ static inline void read_bench_args(const int argc, char *const *argv,
 
 inline void init() noexcept {
   file_c = new file::file_cache(bench_args.public_folder);
-  init_connections_for_threads(connections_for_threads);
   register_before_connection_accept_cb(before_connection_accept_cb);
+}
+
+static void worker(const int thread_id) noexcept {
+  current_thread = thread_id;
+  networking::loop_config_t loop_config = {.mode = networking::SERVER,
+                                           .server.addr = 0,
+                                           .server.port = bench_args.port};
+  if (unlikely(networking::loop_init(&loop_config))) {
+    std::cout << "Error initializing networking loop" << std::endl;
+    return;
+  }
+  std::printf("[worker %d] serving static files: %s\n[worker %d] listening on "
+              "port: %d\n",
+              current_thread, bench_args.public_folder, current_thread,
+              bench_args.port);
+  std::fflush(stdout);
+  while (likely(!networking::loop(&loop_config)))
+    ;
+  networking::loop_destruct(&loop_config);
 }
 
 int main(int argc, char *const *const argv) noexcept {
   read_bench_args(argc, argv, &bench_args);
   init();
-  networking::loop_config_t loop_config = {.mode = networking::SERVER,
-                                           .server.addr = 0,
-                                           .server.port = bench_args.port};
-  if (unlikely(networking::loop_init(&loop_config)))
-    return 1;
-  std::cout << "serving static files: " << bench_args.public_folder
-            << std::endl;
-  std::cout << "listening on port: " << bench_args.port << std::endl;
-  while (likely(!networking::loop(&loop_config)))
-    ;
-  networking::loop_destruct(&loop_config);
+
+  std::vector<std::thread> thread_handles;
+  for (int i = 1; i < bench_args.threads; ++i) {
+    thread_handles.emplace_back(std::thread(worker, i));
+  }
+  worker(0);
+
+  for (auto &thread_handle : thread_handles)
+    thread_handle.join();
   return 0;
 }
