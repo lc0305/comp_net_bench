@@ -55,7 +55,9 @@ static int on_connection_accepted_cb(networking::connection *const connection,
 
 #define RESPONSE_HEADER_MAX_SIZE (1 << 12)
 
+#ifdef BENCH_DEBUG_PRINT
 static thread_local double time_spent_compressing = 0.0;
+#endif
 
 static int on_connection_recvd_cb(networking::connection *const connection,
                                   const ssize_t nbytes) noexcept {
@@ -133,8 +135,9 @@ static int on_connection_recvd_cb(networking::connection *const connection,
                    header_buf_idx = content_buf_idx - 1;
         const auto &content_iov = write_buf.vecs[content_buf_idx],
                    &header_iov = write_buf.vecs[header_buf_idx];
-
+#ifdef BENCH_DEBUG_PRINT
         const auto start = std::chrono::high_resolution_clock::now();
+#endif
         std::size_t compressed_size;
         while (unlikely((compressed_size = compress_buf(
                              file_data.buf, file_data.size,
@@ -149,12 +152,16 @@ static int on_connection_recvd_cb(networking::connection *const connection,
                                         1 << new_buf_log2)))
             goto err;
         }
+#ifdef BENCH_DEBUG_PRINT
         {
           const auto end = std::chrono::high_resolution_clock::now();
           const std::chrono::duration<double> elapsed_duration = end - start;
           const double elapsed = elapsed_duration.count();
           time_spent_compressing += elapsed;
+          std::printf("[worker %d] time spent compressing: %lf (total: %lf)\n",
+                      current_thread, elapsed, time_spent_compressing);
         }
+#endif
 
         auto response = http::http_response(connection->write_buf);
 
