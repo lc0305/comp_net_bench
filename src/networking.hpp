@@ -122,8 +122,8 @@ static int listening_socket_init(uint32_t addr, uint16_t port) noexcept {
 
   {
     const int enable = 1;
-    if (unlikely(setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, &enable,
-                            sizeof(enable)) < 0))
+    if (unlikely(setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,
+                            &enable, sizeof(enable)) < 0))
       goto err_socket;
   }
 
